@@ -1,108 +1,148 @@
-// require("./instrument");
+// Install required packages:
+// npm install @sentry/node @sentry/profiling-node
 
-// All other imports below
-// Import with `import * as Sentry from "@sentry/node"` if you are using ESM
-const Sentry = require("@sentry/node");
-const { nodeProfilingIntegration } = require("@sentry/profiling-node");
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+const express = require('express');
 
+const app = express();
+
+// Initialize Sentry BEFORE any other middleware or routes
 Sentry.init({
   dsn: process.env.SENTRY_URL,
+  
+  // Set tracesSampleRate to 1.0 to capture 100% of transactions for tracing
+  // Adjust this in production (e.g., 0.1 for 10%)
+  tracesSampleRate: 1.0,
+  
+  // Set profilesSampleRate to 1.0 to profile 100% of sampled transactions
+  // This is relative to tracesSampleRate
+  profilesSampleRate: 1.0,
+  
+  // Add the profiling integration
   integrations: [
     nodeProfilingIntegration(),
   ],
-  // Tracing must be enabled for profiling to work
-  tracesSampleRate: 1.0,
-  // Set sampling rate for profiling - this is evaluated only once per SDK.init call
-  profileSessionSampleRate: 1.0,
-  // Trace lifecycle automatically enables profiling during active traces
-  profileLifecycle: 'trace',
-
-  // Setting this option to true will send default PII data to Sentry.
-  // For example, automatic IP address collection on events
-  sendDefaultPii: true,
+  
+  // Optional: Set the environment
+  environment: process.env.NODE_ENV || 'development',
 });
 
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3000;
+// RequestHandler creates a separate execution context using domains
+app.use(Sentry.setupExpressErrorHandler());
 
-// // Middleware Sentry
-// app.use(Sentry.Handlers.requestHandler());
-// app.use(Sentry.Handlers.tracingHandler());
+// All your controllers and routes go here
+app.get('/', (req, res) => {
+  res.json({ message: 'Hello World' });
+});
 
-// Simulasi database
-async function fetchProductsFromDB() {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve([
-        { id: 1, name: "Laptop", price: 1200 },
-        { id: 2, name: "Keyboard", price: 100 },
-      ]);
-    }, 150); // delay 150ms
-  });
-}
+app.get('/debug-sentry', (req, res) => {
+  throw new Error('Test Sentry error!');
+});
 
-// Simulasi cache lookup
-async function checkCache() {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve(null), 50); // miss
-  });
-}
+// Example with custom spans
+app.get('/heavy', (req, res) => {
+  // Start a custom span for the entire operation
+  const span = Sentry.startSpan(
+    { name: 'heavy-computation', op: 'function' },
+    () => {
+      // Nested span for calculation
+      const calcResult = Sentry.startSpan(
+        { name: 'calculate-sqrt', op: 'calculation' },
+        () => {
+          const result = [];
+          for (let i = 0; i < 1000000; i++) {
+            result.push(Math.sqrt(i));
+          }
+          return result;
+        }
+      );
 
-// Simulasi API eksternal
-async function fetchSupplierInfo() {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve("Supplier API OK"), 100);
-  });
-}
+      // Another nested span for processing
+      const processed = Sentry.startSpan(
+        { name: 'process-results', op: 'processing' },
+        () => {
+          return calcResult.filter(x => x > 100);
+        }
+      );
 
-// Route dengan profiling kompleks
-app.get("/products", async (req, res, next) => {
-  // Root span untuk route
-  const rootSpan = Sentry.startSpan({ name: "GET /products", op: "http.server" });
+      return { computed: calcResult.length, filtered: processed.length };
+    }
+  );
 
+  res.json(span);
+});
+
+// Example with async operations and spans
+app.get('/api/users/:id', async (req, res) => {
   try {
-    const result = await rootSpan.run(async () => {
-      // Nested span: cache
-      const cacheSpan = Sentry.startSpan({ name: "Cache lookup", op: "cache.get" });
-      const cacheResult = await cacheSpan.run(checkCache);
-      cacheSpan.end();
-
-      let products;
-
-      if (cacheResult) {
-        products = cacheResult;
-      } else {
-        // Nested span: DB query
-        const dbSpan = Sentry.startSpan({ name: "DB query - products", op: "db.query" });
-        products = await dbSpan.run(fetchProductsFromDB);
-        dbSpan.end();
-
-        // Nested span: external API
-        const apiSpan = Sentry.startSpan({ name: "External API - supplier", op: "http.client" });
-        const supplier = await apiSpan.run(fetchSupplierInfo);
-        apiSpan.end();
-
-        // Nested span: processing logic
-        const processSpan = Sentry.startSpan({ name: "Business logic - enrich products", op: "function" });
-        products = products.map((p) => ({
-          ...p,
-          supplier,
-          priceWithTax: p.price * 1.11,
-        }));
-        processSpan.end();
+    // Simulate database query with span
+    const user = await Sentry.startSpan(
+      { name: 'db.query.user', op: 'db.query' },
+      async () => {
+        // Simulate DB query
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return { id: req.params.id, name: 'John Doe' };
       }
+    );
 
-      return products;
-    });
+    // Simulate external API call with span
+    const additionalData = await Sentry.startSpan(
+      { name: 'http.client.fetch', op: 'http.client' },
+      async () => {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return { credits: 100, level: 5 };
+      }
+    );
 
-    rootSpan.end();
-    res.json(result);
-  } catch (err) {
-    rootSpan.end();
-    next(err);
+    res.json({ user, additionalData });
+  } catch (error) {
+    Sentry.captureException(error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// app.use(Sentry.Handlers.errorHandler());
-app.listen(3000, () => console.log("Server running on http://localhost:3000"));
+// Manual span creation with getActiveSpan
+app.get('/manual-span', (req, res) => {
+  const activeSpan = Sentry.getActiveSpan();
+  
+  if (activeSpan) {
+    // Create child span manually
+    const childSpan = activeSpan.startChild({
+      op: 'custom.operation',
+      description: 'My custom operation'
+    });
+
+    // Do some work
+    const result = complexOperation();
+
+    // Don't forget to finish the span
+    childSpan.finish();
+
+    res.json({ result });
+  } else {
+    res.json({ result: complexOperation() });
+  }
+});
+
+function complexOperation() {
+  let sum = 0;
+  for (let i = 0; i < 100000; i++) {
+    sum += i;
+  }
+  return sum;
+}
+
+// The error handler must be registered before any other error middleware
+app.use(Sentry.errorHandler());
+
+// Optional fallback error handler
+app.use((err, req, res, next) => {
+  res.statusCode = 500;
+  res.end(res.sentry + '\n');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
