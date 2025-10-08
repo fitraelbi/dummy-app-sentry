@@ -1,4 +1,4 @@
-FROM node:18.19-alpine
+FROM node:16.19-alpine
 
 # Set working directory
 WORKDIR /app
@@ -11,6 +11,7 @@ RUN npm ci --only=production
 
 # Copy application files
 COPY server.js ./
+COPY instrument.js ./
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
