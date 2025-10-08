@@ -1,4 +1,4 @@
-require("./instrument.js");
+require("./instrument");
 
 // All other imports below
 // Import with `import * as Sentry from "@sentry/node"` if you are using ESM
